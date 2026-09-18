@@ -691,91 +691,218 @@
   }
 
   /* ============================================================
-     留言板（本地版，保存在浏览器里）
+     留言板（云端版 · 用 GitHub Issues 存储）
+     读取：GitHub 公开接口，访客无需登录即可看到所有人的留言
+     发表：跳转 GitHub 发表页，用 GitHub 账号发布
      ============================================================ */
-  var K_BOARD = 'hana_board_msgs';
+  var BSITE = (window.HANA_SITE && window.HANA_SITE.board) || {};
+  var B = {
+    owner: BSITE.owner || 'bannianhua',
+    repo: BSITE.repo || 'komeiji-hana',
+    prefix: BSITE.prefix || '[留言板]',
+    cacheMinutes: BSITE.cacheMinutes == null ? 5 : BSITE.cacheMinutes,
+    pageSize: BSITE.pageSize || 30,
+    maxLen: BSITE.maxLen || 240
+  };
+  var K_BOARD_CACHE = 'hana_board_cloud_cache';
   var K_NICK = 'hana_board_nick';
+  var K_DRAFT = 'hana_board_draft';
+  var bState = { list: [], loading: false, note: '', fromCache: false, shown: 0 };
 
-  function boardUserMsgs() {
-    try { return JSON.parse(store(K_BOARD) || '[]') || []; } catch (e) { return []; }
-  }
-  function boardSave(list) { store(K_BOARD, JSON.stringify(list)); }
-
+  function bGet(k, d) { try { var v = JSON.parse(store(k) || 'null'); return v === null ? d : v; } catch (e) { return d; } }
+  function bSet(k, v) { store(k, JSON.stringify(v)); }
   function avatarColor(nick) {
-    var h = seedOf(nick) % 360;
-    return 'linear-gradient(135deg,hsl(' + h + ' 72% 72%),hsl(' + ((h + 48) % 360) + ' 76% 64%))';
+    var h = seedOf(nick || '旅人') % 360;
+    return 'linear-gradient(135deg,hsl(' + h + ',72%,72%),hsl(' + ((h + 48) % 360) + ',76%,64%))';
+  }
+  function bTime(ts) {
+    if (!ts) return '';
+    var d = new Date(ts), now = new Date(), diff = (now - d) / 1000;
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    if (diff < 86400 * 30) return Math.floor(diff / 86400) + ' 天前';
+    return (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
   }
 
-  function boardItemHTML(m, preset) {
-    var initial = esc((m.nick || '旅').slice(0, 1));
-    return '<div class="mb-item' + (preset ? ' preset' : '') + '">' +
-      '<div class="mb-av" style="background:' + (preset ? (m.color || '#9bb8e8') : avatarColor(m.nick)) + '">' + initial + '</div>' +
+  function boardReady() { return !!(B.owner && B.repo); }
+  function boardCacheGet() { var c = bGet(K_BOARD_CACHE, null); return (c && Array.isArray(c.list)) ? c : null; }
+  function boardCacheSet(list) { bSet(K_BOARD_CACHE, { ts: Date.now(), list: list }); }
+  function boardCacheFresh(c) { return c && (Date.now() - (c.ts || 0)) < B.cacheMinutes * 60000; }
+
+  /* ---------- 读取：GitHub Issues 公开接口（无需登录） ---------- */
+  function ghBoardFetch() {
+    var url = 'https://api.github.com/repos/' + B.owner + '/' + B.repo +
+      '/issues?state=open&per_page=50&sort=created&direction=desc';
+    return fetch(url, { headers: { 'Accept': 'application/vnd.github+json' }, cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (arr) {
+        if (!Array.isArray(arr)) throw new Error((arr && arr.message) || 'GitHub 返回异常');
+        return arr.filter(function (it) {
+          return it && !it.pull_request && String(it.title || '').indexOf(B.prefix) === 0;
+        }).map(function (it) {
+          var nick = String(it.title).slice(B.prefix.length).trim() || (it.user && it.user.login) || '旅人';
+          return {
+            id: 'i' + it.number,
+            n: nick.slice(0, 16),
+            t: String(it.body || '').trim().slice(0, 600),
+            ts: Date.parse(it.created_at) || 0,
+            url: it.html_url || '',
+            login: (it.user && it.user.login) || '',
+            cmt: it.comments || 0
+          };
+        }).filter(function (m) { return m.t; })
+          .sort(function (x, y) { return y.ts - x.ts; });
+      });
+  }
+
+  /* ---------- 发表入口：跳转 GitHub 发表页（标题前缀用于识别留言） ---------- */
+  function boardNewUrl(nick, text) {
+    var title = B.prefix + ' ' + (nick || '旅人');
+    return 'https://github.com/' + B.owner + '/' + B.repo + '/issues/new?title=' +
+      encodeURIComponent(title) + '&body=' + encodeURIComponent(text);
+  }
+
+  function boardItemHTML(m) {
+    var initial = esc((m.n || '旅').slice(0, 1));
+    return '<div class="mb-item">' +
+      '<div class="mb-av" style="background:' + avatarColor(m.n) + '">' + initial + '</div>' +
       '<div class="mb-body">' +
-        '<div class="mb-top"><b>' + esc(m.nick) + '</b>' +
-          (m.role ? '<span class="mb-role">' + esc(m.role) + '</span>' : '') +
-          '<time>' + esc(m.time) + '</time>' +
-          (preset ? '<span class="mb-preset">地灵殿住人</span>' : '<span class="mb-preset mine">本机留言</span>') +
+        '<div class="mb-top"><b>' + esc(m.n) + '</b>' +
+          '<time>' + bTime(m.ts) + '</time>' +
+          (m.login ? '<span class="mb-role">@' + esc(m.login) + '</span>' : '') +
+          '<span class="mb-preset mine">云端留言</span>' +
         '</div>' +
-        '<p>' + esc(m.text).replace(/\n/g, '<br>') + '</p>' +
+        '<p>' + esc(m.t).replace(/\n/g, '<br>') + '</p>' +
+        (m.url ? '<div class="mb-ops"><a href="' + esc(m.url) + '" target="_blank" rel="noopener">' +
+          (m.cmt ? '在 GitHub 上回复（' + m.cmt + ' 条）' : '在 GitHub 上查看 / 回复') + '</a></div>' : '') +
       '</div>' +
     '</div>';
   }
 
-  function paintBoard() {
+  function boardRender() {
     var box = $('mb-list');
     if (!box) return;
-    var mine = boardUserMsgs();
-    var html = mine.map(function (m) { return boardItemHTML(m, false); }).join('') +
-      H.boardPresets.map(function (m) { return boardItemHTML(m, true); }).join('');
-    box.innerHTML = html;
-    var count = $('mb-count');
-    if (count) count.textContent = (mine.length + H.boardPresets.length) + ' 条';
+    var st = $('mb-status');
+    var total = $('mb-total');
+    if (total) total.textContent = bState.list.length;
+    if (st) {
+      st.innerHTML = bState.loading ? '<span class="mb-note">正在读取云端留言…</span>'
+        : (bState.note ? '<span class="mb-note">' + esc(bState.note) + '</span>' : '');
+    }
+    var shown = bState.list.slice(0, bState.shown || B.pageSize);
+    box.innerHTML = shown.length ? shown.map(boardItemHTML).join('')
+      : '<div class="mb-empty">' + (bState.loading ? '正在读取…' : '云端还没有留言，来做第一个吧 ♥') + '</div>';
+    var more = $('mb-more');
+    if (more) more.innerHTML = bState.list.length > shown.length
+      ? '<button class="btn sm" id="mb-more-btn" type="button">看更早的留言（还有 ' + (bState.list.length - shown.length) + ' 条）</button>' : '';
+    var mb = $('mb-more-btn');
+    if (mb) mb.addEventListener('click', function () { bState.shown += B.pageSize; boardRender(); });
+  }
+
+  function boardLoad(force) {
+    if (!boardReady()) {
+      bState.loading = false;
+      bState.note = '留言板还没配置：请在 js/site.js 里填写 board.owner / board.repo';
+      boardRender();
+      return;
+    }
+    var c = boardCacheGet();
+    if (c) { bState.list = c.list; bState.fromCache = true; }
+    bState.shown = bState.shown || B.pageSize;
+
+    if (c && !force && boardCacheFresh(c)) {
+      bState.loading = false;
+      bState.note = '（显示的是缓存内容，' + B.cacheMinutes + ' 分钟内不重复请求 GitHub）';
+      boardRender();
+      return;
+    }
+    if (typeof fetch !== 'function') {
+      bState.loading = false;
+      bState.note = bState.list.length ? '当前环境不支持联网读取，先显示上次缓存的内容' : '当前环境不支持联网读取留言';
+      boardRender();
+      return;
+    }
+    bState.loading = bState.list.length === 0;
+    bState.note = '';
+    boardRender();
+    ghBoardFetch().then(function (list) {
+      bState.list = list;
+      bState.loading = false;
+      bState.fromCache = false;
+      bState.note = '';
+      boardCacheSet(list);
+      boardRender();
+    }).catch(function () {
+      bState.loading = false;
+      bState.note = bState.list.length
+        ? 'GitHub 暂时读不到（可能达到访问频率限制），先显示缓存内容，稍后再点「刷新云端留言」'
+        : 'GitHub 暂时读不到（可能达到访问频率限制），稍后再点「刷新云端留言」';
+      boardRender();
+    });
+  }
+
+  function boardSend() {
+    var nickEl = $('mb-nick'), textEl = $('mb-text');
+    if (!nickEl || !textEl) return;
+    var nick = (nickEl.value || '').trim().slice(0, 16) || '旅人';
+    var text = (textEl.value || '').trim();
+    if (!boardReady()) { toast('留言板还没配置好（缺少 owner/repo）'); return; }
+    if (!text) { toast('先写点什么再发表吧～～'); textEl.focus(); return; }
+    if (text.length < 2) { toast('华迷迷糊糊地说：「再多写两个字嘛～～」'); textEl.focus(); return; }
+    if (text.length > B.maxLen) { toast('太长了，最多 ' + B.maxLen + ' 字哦～～'); return; }
+    store(K_NICK, nick);
+    bSet(K_DRAFT, { t: text, ts: Date.now() });
+    var url = boardNewUrl(nick, text);
+    var opened = null;
+    try { opened = window.open(url, '_blank'); } catch (e) { }
+    if (!opened) location.href = url;
+    bState.note = '已打开 GitHub 发表页：登录后点「Submit new issue」就发布成功；回到这里点「刷新云端留言」就能看到 ✓';
+    boardRender();
+    toast('正在跳转到 GitHub 发表页……');
   }
 
   function pgBoard() {
+    var nick = esc(store(K_NICK) || '');
     return '' +
       '<h2 class="p-title">留言板</h2>' +
-      '<p class="p-sub">给华留一句话 · 睡着的时候她也听得见哦 · 当前 <b id="mb-count">0 条</b></p>' +
+      '<p class="p-sub">给华留一句话 · 云端共有 <b id="mb-total">0</b> 条留言 · 睡着的时候她也听得见哦</p>' +
       '<div class="board card">' +
         '<div class="mb-form">' +
-          '<input class="mb-nick" id="mb-nick" maxlength="12" placeholder="你的昵称（可以不填）" value="' + esc(store(K_NICK) || '') + '">' +
-          '<textarea class="mb-text" id="mb-text" maxlength="140" rows="3" placeholder="想对华说些什么呢……（140 字以内）"></textarea>' +
+          '<input class="mb-nick" id="mb-nick" maxlength="16" placeholder="你的昵称（可以不填，默认「旅人」）" value="' + nick + '">' +
+          '<textarea class="mb-text" id="mb-text" maxlength="' + B.maxLen + '" rows="3" placeholder="想对华说些什么呢……（' + B.maxLen + ' 字以内）"></textarea>' +
           '<div class="mb-actions">' +
-            '<span class="mb-count" id="mb-len">0 / 140</span>' +
-            '<button class="btn sm" id="mb-clear" type="button">清空本机留言</button>' +
-            '<button class="btn solid" id="mb-send" type="button">发表留言</button>' +
+            '<span class="mb-count" id="mb-len">0 / ' + B.maxLen + '</span>' +
+            '<button class="btn sm" id="mb-refresh" type="button">刷新云端留言</button>' +
+            '<button class="btn solid" id="mb-send" type="button">用 GitHub 账号发表</button>' +
           '</div>' +
-          '<p class="mb-note">※ 这是离线版留言板：你写的内容只保存在当前浏览器的 localStorage 里，不会上传到任何地方。' +
-            '上面的「地灵殿住人」留言是预设的小剧场。</p>' +
+          '<p class="mb-note">※ 留言保存在本项目的 GitHub Issues 云端仓库里，所有访客都能看到；' +
+            '浏览不需要登录，发表需要 GitHub 账号（会跳转到 GitHub 的发表页，发布后回来刷新即可）。' +
+            '请不要填写真实姓名、电话等隐私信息。</p>' +
         '</div>' +
+        '<div class="mb-status" id="mb-status"></div>' +
         '<div class="mb-list" id="mb-list"></div>' +
+        '<div class="mb-more" id="mb-more"></div>' +
       '</div>';
   }
 
   function initBoard() {
     var nick = $('mb-nick'), text = $('mb-text'), len = $('mb-len');
     if (!nick || !text) return;
-    paintBoard();
-    text.addEventListener('input', function () { len.textContent = text.value.length + ' / 140'; });
-    $('mb-send').addEventListener('click', function () {
-      var n = nick.value.trim() || '路过的旅人';
-      var t = text.value.trim();
-      if (t.length < 2) { toast('华迷迷糊糊地说：「再多写两个字嘛～～」'); text.focus(); return; }
-      var list = boardUserMsgs();
-      list.unshift({ nick: n, text: t, time: fmtNow() });
-      boardSave(list);
-      store(K_NICK, n);
-      text.value = ''; len.textContent = '0 / 140';
-      paintBoard();
-      toast('留言写好啦。华在梦里翻了个身，好像听见了～～');
-      text.focus();
-    });
-    $('mb-clear').addEventListener('click', function () {
-      if (!boardUserMsgs().length) { toast('本机还没有留言哦～～'); return; }
-      if (confirm('要清空保存在这台设备上的留言吗？（预设留言不会消失）')) {
-        boardSave([]); paintBoard(); toast('本机留言已经清空啦。');
+    try {
+      var d = bGet(K_DRAFT, null);
+      if (d && d.t && (Date.now() - (d.ts || 0)) < 600000) {
+        text.value = d.t;
+        len.textContent = d.t.length + ' / ' + B.maxLen;
       }
+    } catch (e) { }
+    text.addEventListener('input', function () { len.textContent = text.value.length + ' / ' + B.maxLen; });
+    text.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); boardSend(); }
     });
+    $('mb-send').addEventListener('click', boardSend);
+    $('mb-refresh').addEventListener('click', function () { boardLoad(true); toast('正在刷新云端留言……'); });
+    boardLoad(false);
   }
 
   /* ============================================================
