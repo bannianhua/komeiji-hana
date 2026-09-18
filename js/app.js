@@ -125,7 +125,8 @@
       ['2', '位姐姐'],
       ['4', '处心形饰片'],
       ['100%', '说话拖长音'],
-      ['0', '本月早起次数']
+      ['0', '本月早起次数'],
+      [(window.NOVEL && window.NOVEL.chapterCount) || 110, '章 · 梦眠地灵殿']
     ];
     return '' +
       '<section class="hero">' +
@@ -187,6 +188,7 @@
         entry('#/profile', '👁', '角色设定', '姓名、种族、能力、外貌与性格，全部资料一次看完。', 'PROFILE') +
         entry('#/family', '🏯', '古明地家', '觉姐姐、恋姐姐、地灵殿与第三只眼的种种。', 'FAMILY') +
         entry('#/dream', '💤', '梦眠小屋', '哄华睡觉、抽一枚梦境碎片、听一首摇篮曲。', 'DREAM') +
+        entry('#/novel', '📖', '在线阅读', '长篇《梦眠地灵殿》全本 ' + ((window.NOVEL && window.NOVEL.chapterCount) || 110) + ' 章，带目录、翻页与进度记忆。', 'NOVEL') +
         entry('#/gallery', '🖼', '画廊', '立绘与设定草图，可放大细看。', 'GALLERY') +
         entry('#/board', '✉', '留言板', '给华留一句话吧——睡着的时候她也听得见哦。', 'BOARD') +
       '</div>' +
@@ -906,6 +908,176 @@
   }
 
   /* ============================================================
+     在线阅读（长篇《梦眠地灵殿》）
+     ============================================================ */
+  var NV = window.NOVEL || null;
+  var K_NV_CH = 'hana_novel_chapter';
+  var K_NV_FS = 'hana_novel_fontsize';
+  var K_NV_THEME = 'hana_novel_theme';
+  var nvState = {
+    cur: Math.max(1, Math.round(num(K_NV_CH, 1))),
+    fs: Math.max(14, Math.min(26, Math.round(num(K_NV_FS, 18)))),
+    theme: store(K_NV_THEME) || 'day',
+    filter: ''
+  };
+
+  function nvChapter(no) {
+    if (!NV || !NV.chapters || !NV.chapters.length) return null;
+    no = Math.max(1, Math.min(NV.chapters.length, no));
+    return NV.chapters[no - 1];
+  }
+  function nvPad(n) { return String(n).padStart(3, '0'); }
+  function nvTextHTML(text) {
+    return String(text || '').split(/\n{2,}/).map(function (p) {
+      var t = p.trim();
+      if (!t) return '';
+      if (t === '＊　＊　＊') return '<p class="nv-break">＊　＊　＊</p>';
+      return '<p>' + esc(t).replace(/\n/g, '<br>') + '</p>';
+    }).join('');
+  }
+  function nvTocHTML() {
+    if (!NV) return '';
+    var out = '', lastVol = '', f = nvState.filter;
+    NV.chapters.forEach(function (c) {
+      if (f && c.full.indexOf(f) < 0 && c.title.indexOf(f) < 0) return;
+      if (c.vol !== lastVol) { out += '<div class="nv-vol">' + esc(c.vol) + '</div>'; lastVol = c.vol; }
+      out += '<a class="nv-chap' + (c.id === nvState.cur ? ' on' : '') + '" href="javascript:void(0)" data-ch="' + c.id + '">' +
+        '<span class="nv-cno">' + nvPad(c.id) + '</span>' + esc(c.title) + '</a>';
+    });
+    return out || '<div class="nv-empty">没有找到章节～～</div>';
+  }
+  function nvPaintToc() { var el = $('nv-toc'); if (el) el.innerHTML = nvTocHTML(); }
+  function nvChrome(c) {
+    var crumb = $('nv-crumb');
+    if (crumb) crumb.textContent = c.vol + ' · 第 ' + c.id + ' / ' + NV.chapterCount + ' 章';
+    var bar = $('nv-progress');
+    if (bar) bar.style.width = (c.id / NV.chapters.length * 100).toFixed(1) + '%';
+    var rc = $('nv-read-count');
+    if (rc) rc.textContent = nvPad(c.id) + ' / ' + NV.chapterCount;
+    var prev = $('nv-prev'), next = $('nv-next');
+    if (prev) prev.disabled = c.id <= 1;
+    if (next) next.disabled = c.id >= NV.chapters.length;
+  }
+  function nvPaintChapter() {
+    var c = nvChapter(nvState.cur);
+    if (!c) return;
+    var box = $('nv-text');
+    if (box) {
+      box.style.fontSize = nvState.fs + 'px';
+      box.innerHTML = '<h2 class="nv-ch-title">' + esc(c.full) + '</h2>' + nvTextHTML(c.text);
+    }
+    nvChrome(c);
+    nvPaintToc();
+    store(K_NV_CH, c.id);
+    nvScrollTop();
+  }
+  function nvScrollTop() {
+    var main = document.querySelector('#pg-novel .nv-main');
+    if (main) main.scrollTop = 0;
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }
+  function nvGo(no) {
+    if (!NV) return;
+    nvState.cur = Math.max(1, Math.min(NV.chapters.length, no));
+    nvPaintChapter();
+    nvToggleDrawer(false);
+  }
+  function nvSetFont(d) {
+    nvState.fs = Math.max(14, Math.min(26, nvState.fs + d));
+    store(K_NV_FS, nvState.fs);
+    var box = $('nv-text');
+    if (box) box.style.fontSize = nvState.fs + 'px';
+  }
+  function nvSetTheme(t) {
+    nvState.theme = t;
+    store(K_NV_THEME, t);
+    var box = $('nv-reader');
+    if (box) box.classList.toggle('night', t === 'night');
+    var btn = $('nv-theme');
+    if (btn) btn.textContent = t === 'night' ? '☀ 日间' : '🌙 夜间';
+  }
+  function nvToggleDrawer(force) {
+    var box = $('nv-reader');
+    if (!box) return;
+    var open = force === undefined ? !box.classList.contains('drawer') : force;
+    box.classList.toggle('drawer', open);
+  }
+  function nvKey(e) {
+    if (curRoute !== 'novel') return;
+    var tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); nvGo(nvState.cur - 1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); nvGo(nvState.cur + 1); }
+  }
+
+  function pgNovel() {
+    if (!NV) {
+      return '<div class="card prose" style="max-width:640px;margin:60px auto"><h2>小说数据没有加载</h2>' +
+        '<p>请确认 js/novel.js 存在；也可以直接下载 EPUB：<a href="assets/novel.epub" download>古明地华-梦眠地灵殿.epub</a></p></div>';
+    }
+    if (nvState.cur > NV.chapters.length) nvState.cur = 1;
+    var c = nvChapter(nvState.cur);
+    var vols = [];
+    NV.chapters.forEach(function (x) { if (vols.indexOf(x.vol) < 0) vols.push(x.vol); });
+    return '' +
+      '<div class="nv-reader' + (nvState.theme === 'night' ? ' night' : '') + '" id="nv-reader">' +
+        '<div class="nv-backdrop" id="nv-backdrop"></div>' +
+        '<aside class="nv-side">' +
+          '<div class="nv-book">' +
+            '<h2>' + esc(NV.title) + '</h2>' +
+            '<p class="nv-sub">' + esc(NV.subtitle) + '</p>' +
+            '<p class="nv-meta">全 ' + NV.chapterCount + ' 章 · 约 ' + Math.round(NV.charCount / 10000) + ' 万字 · ' + esc(NV.author) + '</p>' +
+          '</div>' +
+          '<input class="nv-search" id="nv-search" placeholder="搜索章节名…" value="' + esc(nvState.filter) + '">' +
+          '<div class="nv-toc" id="nv-toc">' + nvTocHTML() + '</div>' +
+        '</aside>' +
+        '<section class="nv-main">' +
+          '<div class="nv-toolbar">' +
+            '<button class="btn sm ghost nv-menu" id="nv-menu" type="button">☰ 目录</button>' +
+            '<span class="nv-crumb" id="nv-crumb"></span>' +
+            '<span class="nv-tools">' +
+              '<button class="btn sm ghost" id="nv-fs-m" type="button" title="缩小字号">A－</button>' +
+              '<button class="btn sm ghost" id="nv-fs-p" type="button" title="放大字号">A＋</button>' +
+              '<button class="btn sm ghost" id="nv-theme" type="button">' + (nvState.theme === 'night' ? '☀ 日间' : '🌙 夜间') + '</button>' +
+              '<a class="btn sm ghost" href="assets/novel.epub" download title="下载 EPUB 电子书">⬇ EPUB</a>' +
+            '</span>' +
+          '</div>' +
+          '<div class="nv-progressbar"><i id="nv-progress"></i></div>' +
+          '<article class="nv-text" id="nv-text" style="font-size:' + nvState.fs + 'px">' +
+            '<h2 class="nv-ch-title">' + esc(c.full) + '</h2>' + nvTextHTML(c.text) +
+          '</article>' +
+          '<div class="nv-nav">' +
+            '<button class="btn" id="nv-prev" type="button">‹ 上一章</button>' +
+            '<span class="nv-read-count" id="nv-read-count"></span>' +
+            '<button class="btn solid" id="nv-next" type="button">下一章 ›</button>' +
+          '</div>' +
+          '<p class="nv-tip">阅读进度会自动保存在本机浏览器里 · 键盘 ← → 可以翻页 · 目录里可以搜索章节</p>' +
+        '</section>' +
+      '</div>';
+  }
+
+  function initNovel() {
+    if (!NV) return;
+    var box = $('nv-reader');
+    if (!box) return;
+    nvPaintChapter();
+    var side = box.querySelector('.nv-side');
+    if (side) side.addEventListener('click', function (e) {
+      var a = e.target.closest('.nv-chap');
+      if (a) nvGo(parseInt(a.dataset.ch, 10));
+    });
+    var search = $('nv-search');
+    if (search) search.addEventListener('input', function () { nvState.filter = search.value.trim(); nvPaintToc(); });
+    if ($('nv-menu')) $('nv-menu').addEventListener('click', function () { nvToggleDrawer(); });
+    if ($('nv-backdrop')) $('nv-backdrop').addEventListener('click', function () { nvToggleDrawer(false); });
+    if ($('nv-prev')) $('nv-prev').addEventListener('click', function () { nvGo(nvState.cur - 1); });
+    if ($('nv-next')) $('nv-next').addEventListener('click', function () { nvGo(nvState.cur + 1); });
+    if ($('nv-fs-m')) $('nv-fs-m').addEventListener('click', function () { nvSetFont(-1); });
+    if ($('nv-fs-p')) $('nv-fs-p').addEventListener('click', function () { nvSetFont(1); });
+    if ($('nv-theme')) $('nv-theme').addEventListener('click', function () { nvSetTheme(nvState.theme === 'night' ? 'day' : 'night'); });
+  }
+
+  /* ============================================================
      摇篮曲（Web Audio 合成，无需任何音频文件）
      ============================================================ */
   var AC = window.AudioContext || window.webkitAudioContext;
@@ -978,13 +1150,14 @@
   /* ============================================================
      路由
      ============================================================ */
-  var RENDER = { home: pgHome, profile: pgProfile, family: pgFamily, dream: pgDream, gallery: pgGallery, board: pgBoard };
-  var AFTER = { home: initHome, profile: initProfile, dream: initDream, gallery: initGallery, board: initBoard };
+  var RENDER = { home: pgHome, profile: pgProfile, family: pgFamily, dream: pgDream, novel: pgNovel, gallery: pgGallery, board: pgBoard };
+  var AFTER = { home: initHome, profile: initProfile, dream: initDream, novel: initNovel, gallery: initGallery, board: initBoard };
   var TITLES = {
     home: '梦眠馆 · 古明地华 | 古明地家三妹的角色小屋',
     profile: '角色设定 · 梦眠馆 · 古明地华',
     family: '古明地家 · 梦眠馆 · 古明地华',
     dream: '梦眠小屋 · 梦眠馆 · 古明地华',
+    novel: '在线阅读《梦眠地灵殿》 · 梦眠馆 · 古明地华',
     gallery: '画廊 · 梦眠馆 · 古明地华',
     board: '留言板 · 梦眠馆 · 古明地华'
   };
@@ -1016,6 +1189,7 @@
     initLightbox();
     initMusicBtn();
     window.addEventListener('hashchange', go);
+    document.addEventListener('keydown', nvKey);
     go();
     setTimeout(function () {
       if (curRoute === 'home') toast('呼啊～～欢迎来到梦眠馆……被窝也可以借你躺一下哦～～', 5600);
